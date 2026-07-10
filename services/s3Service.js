@@ -35,6 +35,12 @@ const generateUploadPresignedUrl = async (filename, contentType) => {
 const deleteS3Object = async (key) => {
   const bucketName = process.env.S3_BUCKET_NAME;
   if (!bucketName) return;
+  
+  // CRITICAL SECURITY FIX: Prevent empty keys from turning into a DELETE / (DeleteBucket) request
+  if (!key || key.trim() === '') {
+    console.warn('Attempted to delete S3 object with empty key. Aborting to prevent bucket deletion.');
+    return;
+  }
 
   const command = new DeleteObjectCommand({
     Bucket: bucketName,
