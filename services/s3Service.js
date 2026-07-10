@@ -1,25 +1,47 @@
+const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { v4: uuidv4 } = require('uuid');
 
-// S3 is bypassed for local-only mode.
-// Images are stored as base64 data URLs sent directly from the client.
-// This service generates a local key and returns a mock presigned URL
-// that the client will never actually call.
+const s3Client = new S3Client({
+  region: process.env.AWS_REGION || 'us-east-1'
+});
 
 const generateUploadPresignedUrl = async (filename, contentType) => {
+  const bucketName = process.env.S3_BUCKET_NAME;
+  if (!bucketName) {
+    throw new Error('S3_BUCKET_NAME environment variable is not set');
+  }
+
   const uniqueId = uuidv4();
   const fileExtension = filename.split('.').pop();
-  const key = `local/${uniqueId}.${fileExtension}`;
+  const key = `uploads/${uniqueId}.${fileExtension}`;
+
+  const command = new PutObjectCommand({
+    Bucket: bucketName,
+    Key: key,
+    ContentType: contentType,
+  });
+
+  const presignedUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+  const publicUrl = `https://${bucketName}.s3.${process.env.AWS_REGION || 'us-east-1'}.amazonaws.com/${key}`;
 
   return {
-    presignedUrl: 'local', // sentinel value — client skips S3 PUT
+    presignedUrl,
     key,
-    publicUrl: ''           // client will supply the real base64 data URL
+    publicUrl
   };
 };
 
-// No-op: nothing to delete from S3 in local mode
 const deleteS3Object = async (key) => {
-  // local mode — no-op
+  const bucketName = process.env.S3_BUCKET_NAME;
+  if (!bucketName) return;
+
+  const command = new DeleteObjectCommand({
+    Bucket: bucketName,
+    Key: key
+  });
+
+  await s3Client.send(command);
 };
 
 module.exports = {
