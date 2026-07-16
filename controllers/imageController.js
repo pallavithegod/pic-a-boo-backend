@@ -1,5 +1,10 @@
 const s3Service = require('../services/s3Service');
-const db = require('../services/db');
+const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
+const { DynamoDBDocumentClient, PutCommand, ScanCommand, DeleteCommand, GetCommand } = require("@aws-sdk/lib-dynamodb");
+
+const client = new DynamoDBClient({ region: process.env.AWS_REGION || 'eu-north-1' });
+const docClient = DynamoDBDocumentClient.from(client);
+const TABLE_NAME = 'PicabooImages';
 
 // Generate a presigned URL (returns local sentinel in local mode)
 const getPresignedUrl = async (req, res) => {
@@ -25,22 +30,14 @@ const createImage = async (req, res) => {
       return res.status(400).json({ error: 'id and filename are required' });
     }
 
-    /*
-    const newImage = db.saveImage({
-      id,
-      key: key || '',
-      publicUrl: publicUrl || '',
-      filename,
-      width: Number(width) || 0,
-      height: Number(height) || 0,
-      aspectRatio: Number(aspectRatio) || 1,
-      blurDataUrl: blurDataUrl || '',
-      timestamp: timestamp || new Date().toISOString()
-    });
-    */
     const newImage = {
       id, key, publicUrl, filename, width, height, aspectRatio, blurDataUrl, timestamp: new Date().toISOString()
     };
+
+    await docClient.send(new PutCommand({
+      TableName: TABLE_NAME,
+      Item: newImage
+    }));
 
     res.status(201).json(newImage);
   } catch (error) {
@@ -52,8 +49,13 @@ const createImage = async (req, res) => {
 // List all images
 const getImages = async (req, res) => {
   try {
-    /* const images = db.getAllImages(); */
-    const images = []; // Mock empty gallery
+    const { Items } = await docClient.send(new ScanCommand({
+      TableName: TABLE_NAME
+    }));
+    
+    // Sort by timestamp descending (newest first)
+    const images = (Items || []).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    
     res.status(200).json(images);
   } catch (error) {
     console.error('Error retrieving images:', error.message);
@@ -69,20 +71,32 @@ const deleteImage = async (req, res) => {
       return res.status(400).json({ error: 'Image ID is required' });
     }
 
-    /*
-    const image = db.deleteImage(id);
-    if (!image) {
+    // Get the image first to find its S3 key
+    const { Item } = await docClient.send(new GetCommand({
+      TableName: TABLE_NAME,
+      Key: { id }
+    }));
+
+    if (!Item) {
       return res.status(404).json({ error: 'Image not found' });
     }
-    */
-    const image = { key: '' }; // Mock object to satisfy the code below
 
-    // S3 delete is a no-op in local mode (silent)
+    // Delete from DynamoDB
+    await docClient.send(new DeleteCommand({
+      TableName: TABLE_NAME,
+      Key: { id }
+    }));
+
+    // Delete from S3
     try {
-      await s3Service.deleteS3Object(image.key);
+      if (Item.key) {
+        await s3Service.deleteS3Object(Item.key);
+      }
     } catch (s3Error) {
-      // Intentionally silent
+      console.error('Failed to delete S3 object:', s3Error.message);
     }
+    
+    const image = Item;
 
     res.status(200).json({ message: 'Image deleted successfully', image });
   } catch (error) {
